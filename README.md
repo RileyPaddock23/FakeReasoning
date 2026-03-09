@@ -13,6 +13,7 @@ This is the source code for *Towards Generalizable Forgery Detection and Reasoni
 
 ## News
 
+* **Mar 9 2026**: Our paper is accepted to IEEE TIP!
 * **Aug 27 2025**: The [pretrained model](https://huggingface.co/AnnaGao/FakeReasoning) and source code are released. If you have followed our earlier work, please note that both the **dataset** and **method** have been updated. Check details on [arXiv](https://arxiv.org/abs/2503.21210).
 * **Jun 11 2025**: The [MMFR-Dataset](https://huggingface.co/datasets/AnnaGao/MMFR-Dataset) is released! Also we provide codes to follow our dataset construction pipeline. 
 * **Apr 15 2025**:  The [Project Page](https://pris-cv.github.io/FakeReasoning/) of our paper has been published! Click to find more about performance of FakeReasoning and samples in MMFR-Dataset.
