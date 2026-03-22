@@ -6,23 +6,8 @@ from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
-import torch
 
-from llava.constants import (
-    DEFAULT_IMAGE_TOKEN,
-    DEFAULT_IM_END_TOKEN,
-    DEFAULT_IM_START_TOKEN,
-    IMAGE_PLACEHOLDER,
-    IMAGE_TOKEN_INDEX,
-)
-from llava.conversation import conv_templates
-from llava.mm_utils import (
-    get_model_name_from_path,
-    process_images,
-    tokenizer_image_token,
-)
-from llava.model.builder import load_pretrained_model
-from llava.utils import disable_torch_init
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
 class FakeReasoningModule:
@@ -43,6 +28,12 @@ class FakeReasoningModule:
         self.num_beams = num_beams
         self.max_new_tokens = max_new_tokens
 
+        import torch
+        from llava.mm_utils import get_model_name_from_path
+        from llava.model.builder import load_pretrained_model
+        from llava.utils import disable_torch_init
+
+        self._torch = torch
         disable_torch_init()
         model_name = get_model_name_from_path(model_path)
         self.tokenizer, self.model, self.image_processor, _ = load_pretrained_model(
@@ -53,6 +44,14 @@ class FakeReasoningModule:
         )
 
     def _build_prompt(self) -> str:
+        from llava.constants import (
+            DEFAULT_IMAGE_TOKEN,
+            DEFAULT_IM_END_TOKEN,
+            DEFAULT_IM_START_TOKEN,
+            IMAGE_PLACEHOLDER,
+        )
+        from llava.conversation import conv_templates
+
         qs = (
             "Is this image real or fake? Please describe the image, reasoning step-by-step and conclude "
             "with 'this image is real' or 'this image is fake'. "
@@ -106,22 +105,28 @@ class FakeReasoningModule:
         }
 
     def infer_image(self, image: Image.Image) -> Dict[str, str]:
+        from llava.constants import IMAGE_TOKEN_INDEX
+        from llava.mm_utils import process_images, tokenizer_image_token
+
         prompt = self._build_prompt()
         input_ids = tokenizer_image_token(
             prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
-        ).unsqueeze(0).to(self.model.device)
+        )
+        input_ids = input_ids.unsqueeze(0).to(self.model.device)
 
-        image_dtype = torch.float16 if self.model.device.type == "cuda" else torch.float32
+        image_dtype = (
+            self._torch.float16 if self.model.device.type == "cuda" else self._torch.float32
+        )
         image_tensor = process_images([image], self.image_processor, self.model.config).to(
             self.model.device, dtype=image_dtype
         )
 
-        with torch.inference_mode():
+        with self._torch.inference_mode():
             output_ids = self.model.generate(
                 input_ids,
                 images=image_tensor,
                 image_sizes=None,
-                do_sample=True if self.temperature > 0 else False,
+                do_sample=self.temperature > 0,
                 temperature=self.temperature,
                 top_p=self.top_p,
                 num_beams=self.num_beams,
@@ -144,11 +149,16 @@ def create_app(module: FakeReasoningModule) -> FastAPI:
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="Uploaded image is empty.")
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Uploaded image exceeds size limit ({MAX_UPLOAD_BYTES} bytes).",
+            )
 
         try:
             image = Image.open(io.BytesIO(content)).convert("RGB")
         except (UnidentifiedImageError, OSError):
-            raise HTTPException(status_code=400, detail="Unable to decode uploaded image.")
+            raise HTTPException(status_code=400, detail="Invalid or corrupted image file.")
 
         return module.infer_image(image)
 
@@ -156,6 +166,30 @@ def create_app(module: FakeReasoningModule) -> FastAPI:
 
 
 _global_module: Optional[FakeReasoningModule] = None
+
+
+def _read_env_float(name: str, default: Optional[float] = None) -> Optional[float]:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Invalid float value for environment variable {name}: '{raw}'. Expected a numeric value."
+        ) from exc
+
+
+def _read_env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Invalid integer value for environment variable {name}: '{raw}'. Expected a whole number."
+        ) from exc
 
 
 def _get_global_app() -> FastAPI:
@@ -177,14 +211,10 @@ def _get_global_app() -> FastAPI:
             model_path=model_path,
             model_base=os.environ.get("FAKEREASONING_MODEL_BASE"),
             conv_mode=os.environ.get("FAKEREASONING_CONV_MODE", "llava_v1"),
-            temperature=float(os.environ.get("FAKEREASONING_TEMPERATURE", "0.2")),
-            top_p=(
-                float(os.environ["FAKEREASONING_TOP_P"])
-                if "FAKEREASONING_TOP_P" in os.environ
-                else None
-            ),
-            num_beams=int(os.environ.get("FAKEREASONING_NUM_BEAMS", "1")),
-            max_new_tokens=int(os.environ.get("FAKEREASONING_MAX_NEW_TOKENS", "512")),
+            temperature=_read_env_float("FAKEREASONING_TEMPERATURE", 0.2),
+            top_p=_read_env_float("FAKEREASONING_TOP_P", None),
+            num_beams=_read_env_int("FAKEREASONING_NUM_BEAMS", 1),
+            max_new_tokens=_read_env_int("FAKEREASONING_MAX_NEW_TOKENS", 512),
             device=os.environ.get("FAKEREASONING_DEVICE", "cuda"),
         )
     return create_app(_global_module)
@@ -201,9 +231,9 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--conv-mode", type=str, default="llava_v1")
     parser.add_argument("--temperature", type=float, default=0.2)
-    parser.add_argument("--top_p", type=float, default=None)
-    parser.add_argument("--num_beams", type=int, default=1)
-    parser.add_argument("--max_new_tokens", type=int, default=512)
+    parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--num-beams", type=int, default=1)
+    parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
 

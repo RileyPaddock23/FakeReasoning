@@ -159,10 +159,10 @@ curl -X POST "http://127.0.0.1:8000/predict" \
 ```
 
 Response fields include:
-- `result`: `real`, `fake`, or `unknown`
-- `reasoning`: model reasoning text
-- `conclusion`: extracted conclusion text
-- `raw_output`: complete generated output
+- `result` (string): `real`, `fake`, or `unknown` (`unknown` is returned if the model output does not contain a clear real/fake conclusion)
+- `reasoning` (string): model reasoning text
+- `conclusion` (string): extracted conclusion text
+- `raw_output` (string): complete generated output
 
 #### Evaluation on the MMFR-Dataset
 
