@@ -128,6 +128,42 @@ python inference.py \
 --img_path commonFake_COCO_if_stage_III_189.png
 ```
 
+#### Inference API (image upload for app/extension integration)
+
+Run a small FastAPI server that accepts an uploaded image and returns the detection result and reasoning:
+
+```bash
+cd LLaVA
+export DINO_PATH='path_to_dinov2-main'
+export DINO_WEIGHT='path_to_dinov2_vitl14_pretrain.pth'
+python forgery_eval/api.py --model-path path_to_FakeReasoning_weights --device cuda
+```
+
+Or run with `uvicorn`:
+
+```bash
+cd LLaVA
+export FAKEREASONING_MODEL_PATH='path_to_FakeReasoning_weights'
+export DINO_PATH='path_to_dinov2-main'
+export DINO_WEIGHT='path_to_dinov2_vitl14_pretrain.pth'
+uvicorn forgery_eval.api:app --host 0.0.0.0 --port 8000
+```
+
+Upload an image:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/predict" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@commonFake_COCO_if_stage_III_189.png"
+```
+
+Response fields include:
+- `result`: `real`, `fake`, or `unknown`
+- `reasoning`: model reasoning text
+- `conclusion`: extracted conclusion text
+- `raw_output`: complete generated output
+
 #### Evaluation on the MMFR-Dataset
 
 ```bash
